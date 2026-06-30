@@ -1,0 +1,4 @@
+node_modules/
+scripts/
+outputs/question_bank_test/
+*.log

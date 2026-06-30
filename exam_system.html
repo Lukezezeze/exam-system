@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>期末题库考试系统</title>
+    <link rel="stylesheet" href="./exam_system.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Final Review</p>
+          <h1>期末题库考试系统</h1>
+          <p class="hero-copy">
+            从学习通题库随机抽题，自动累计错题，普通模式会跳过错题，错题专项只练错题。
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span>题库总量</span>
+            <strong id="stat-total">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>错题数量</span>
+            <strong id="stat-wrong">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>累计作答</span>
+            <strong id="stat-answered">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel config-panel" id="config-panel">
+          <div class="panel-header">
+            <h2>开始考试</h2>
+            <button id="reset-records-btn" class="ghost-btn" type="button">重置记录</button>
+          </div>
+
+          <div class="mode-grid">
+            <button class="mode-card active" data-mode="normal" type="button">
+              <span class="mode-title">普通考试</span>
+              <span class="mode-desc">从非错题里随机抽题</span>
+            </button>
+            <button class="mode-card" data-mode="wrong" type="button">
+              <span class="mode-title">错题专项</span>
+              <span class="mode-desc">只从错题池里抽题</span>
+            </button>
+          </div>
+
+          <label class="field">
+            <span>抽题数量</span>
+            <input id="question-count-input" type="number" min="1" value="20" />
+          </label>
+
+          <div class="config-hint" id="mode-hint"></div>
+          <button id="start-exam-btn" class="primary-btn" type="button">开始考试</button>
+        </section>
+
+        <section class="panel summary-panel">
+          <div class="panel-header">
+            <h2>记录概览</h2>
+          </div>
+          <div class="summary-list">
+            <div class="summary-row">
+              <span>普通模式可抽题数</span>
+              <strong id="available-normal">0</strong>
+            </div>
+            <div class="summary-row">
+              <span>错题专项可抽题数</span>
+              <strong id="available-wrong">0</strong>
+            </div>
+            <div class="summary-row">
+              <span>最近一次成绩</span>
+              <strong id="latest-score">暂无</strong>
+            </div>
+          </div>
+          <p class="summary-note">
+            错题专项里答对的题会移出错题池，重新回到普通模式可抽范围。
+          </p>
+        </section>
+
+        <section class="panel exam-panel hidden" id="exam-panel">
+          <div class="exam-header">
+            <div>
+              <p class="exam-mode" id="exam-mode-label"></p>
+              <h2 id="exam-progress-label">第 1 题</h2>
+            </div>
+            <div class="exam-header-actions">
+              <button id="submit-exam-btn" class="primary-btn submit-exam-trigger" type="button">交卷</button>
+            </div>
+          </div>
+
+          <div class="exam-progress-bar">
+            <div id="exam-progress-fill"></div>
+          </div>
+
+          <article class="question-card">
+            <p class="question-type" id="question-type"></p>
+            <h3 id="question-text"></h3>
+            <div class="options-list" id="options-list"></div>
+            <div class="answer-feedback hidden" id="answer-feedback"></div>
+          </article>
+
+          <div class="exam-nav">
+            <button id="prev-question-btn" class="ghost-btn" type="button">上一题</button>
+            <button id="next-question-btn" class="ghost-btn" type="button">下一题</button>
+          </div>
+
+          <div class="question-index" id="question-index"></div>
+
+          <div class="exam-submit-bar">
+            <span id="exam-submit-hint">做完后可以直接交卷</span>
+            <button class="primary-btn submit-exam-trigger" type="button">交卷</button>
+          </div>
+        </section>
+
+        <section class="panel result-panel hidden" id="result-panel">
+          <div class="panel-header">
+            <h2>本次结果</h2>
+            <button id="restart-btn" class="ghost-btn" type="button">返回首页</button>
+          </div>
+          <div class="result-overview">
+            <div class="result-metric">
+              <span>得分</span>
+              <strong id="result-score">0 / 0</strong>
+            </div>
+            <div class="result-metric">
+              <span>正确率</span>
+              <strong id="result-accuracy">0%</strong>
+            </div>
+            <div class="result-metric">
+              <span>错题数</span>
+              <strong id="result-wrong-count">0</strong>
+            </div>
+          </div>
+          <div id="result-review-list" class="review-list"></div>
+        </section>
+
+        <section class="panel wrongbook-panel">
+          <div class="panel-header">
+            <h2>错题本</h2>
+            <button id="clear-wrongbook-btn" class="ghost-btn" type="button">清空错题本</button>
+          </div>
+          <div id="wrongbook-list" class="wrongbook-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <template id="option-template">
+      <label class="option-item">
+        <input type="radio" name="question-option" />
+        <span class="option-badge"></span>
+        <span class="option-text"></span>
+      </label>
+    </template>
+
+    <script src="./exam_system.js"></script>
+  </body>
+</html>
