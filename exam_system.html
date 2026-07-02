@@ -39,6 +39,20 @@
             <button id="reset-records-btn" class="ghost-btn" type="button">重置记录</button>
           </div>
 
+          <div class="bank-section">
+            <span class="section-label">选择题库</span>
+            <div class="bank-grid">
+              <button class="bank-card active" data-bank="security" type="button">
+                <span class="bank-title">网络安全题库</span>
+                <span class="bank-desc">只从网络安全题库抽题</span>
+              </button>
+              <button class="bank-card" data-bank="software_test" type="button">
+                <span class="bank-title">软件测试题库</span>
+                <span class="bank-desc">只从软件测试题库抽题</span>
+              </button>
+            </div>
+          </div>
+
           <div class="mode-grid">
             <button class="mode-card active" data-mode="normal" type="button">
               <span class="mode-title">普通考试</span>
@@ -62,6 +76,7 @@
         <section class="panel summary-panel">
           <div class="panel-header">
             <h2>记录概览</h2>
+            <span class="current-bank-pill" id="current-bank-label">网络安全</span>
           </div>
           <div class="summary-list">
             <div class="summary-row">

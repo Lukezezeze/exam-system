@@ -1,5 +1,19 @@
-const QUESTIONS_URL = "./outputs/xuexitong_exam_export/questions.json";
-const STORAGE_KEY = "final_review_exam_state_v1";
+const QUESTION_BANKS = {
+  security: {
+    name: "网络安全",
+    shortName: "网络安全",
+    url: "./outputs/xuexitong_exam_export/questions.json",
+  },
+  software_test: {
+    name: "软件测试",
+    shortName: "软件测试",
+    url: "./outputs/xuexitong_course2_export/questions.json",
+  },
+};
+
+const STORAGE_PREFIX = "final_review_exam_state_v2";
+const LEGACY_STORAGE_KEY = "final_review_exam_state_v1";
+const SELECTED_BANK_KEY = "final_review_selected_bank_v1";
 
 const TYPE_WEIGHTS = {
   single: 5,
@@ -14,7 +28,9 @@ const dom = {
   availableNormal: document.getElementById("available-normal"),
   availableWrong: document.getElementById("available-wrong"),
   latestScore: document.getElementById("latest-score"),
+  currentBankLabel: document.getElementById("current-bank-label"),
   modeHint: document.getElementById("mode-hint"),
+  bankCards: [...document.querySelectorAll(".bank-card")],
   modeCards: [...document.querySelectorAll(".mode-card")],
   countInput: document.getElementById("question-count-input"),
   startExamBtn: document.getElementById("start-exam-btn"),
@@ -33,7 +49,6 @@ const dom = {
   answerFeedback: document.getElementById("answer-feedback"),
   prevQuestionBtn: document.getElementById("prev-question-btn"),
   nextQuestionBtn: document.getElementById("next-question-btn"),
-  submitExamBtn: document.getElementById("submit-exam-btn"),
   questionIndex: document.getElementById("question-index"),
   examSubmitHint: document.getElementById("exam-submit-hint"),
   resultScore: document.getElementById("result-score"),
@@ -46,44 +61,120 @@ const dom = {
 };
 
 const state = {
+  bankKey: localStorage.getItem(SELECTED_BANK_KEY) || "security",
   mode: "normal",
   questions: [],
   records: {},
   sessions: [],
   exam: null,
+  isLoadingBank: false,
 };
 
 init().catch((error) => {
   console.error(error);
-  alert("题库加载失败，请确认 questions.json 存在且本页面通过本地服务器打开。");
+  alert("题库加载失败，请确认题库 JSON 文件存在，并通过本地服务器打开页面。");
 });
 
 async function init() {
+  if (!QUESTION_BANKS[state.bankKey]) {
+    state.bankKey = "security";
+  }
+
   if (new URL(window.location.href).searchParams.get("reset") === "1") {
-    localStorage.removeItem(STORAGE_KEY);
+    Object.keys(QUESTION_BANKS).forEach((bankKey) => localStorage.removeItem(getStorageKey(bankKey)));
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     window.history.replaceState({}, "", window.location.pathname);
   }
 
-  const response = await fetch(QUESTIONS_URL, { cache: "no-store" });
+  bindEvents();
+  updateModeUI();
+  updateBankUI();
+  await loadCurrentBank();
+}
+
+function bindEvents() {
+  dom.bankCards.forEach((card) => {
+    card.addEventListener("click", () => {
+      const nextBank = card.dataset.bank;
+      if (nextBank && nextBank !== state.bankKey) {
+        selectBank(nextBank);
+      }
+    });
+  });
+
+  dom.modeCards.forEach((card) => {
+    card.addEventListener("click", () => {
+      state.mode = card.dataset.mode;
+      updateModeUI();
+    });
+  });
+
+  dom.startExamBtn.addEventListener("click", startExam);
+  dom.prevQuestionBtn.addEventListener("click", () => navigateQuestion(-1));
+  dom.nextQuestionBtn.addEventListener("click", () => navigateQuestion(1));
+  dom.submitExamTriggers.forEach((button) => button.addEventListener("click", submitExam));
+  dom.restartBtn.addEventListener("click", finishReview);
+  dom.resetRecordsBtn.addEventListener("click", resetCurrentBankRecords);
+  dom.clearWrongbookBtn.addEventListener("click", clearWrongbook);
+}
+
+async function selectBank(bankKey) {
+  if (!QUESTION_BANKS[bankKey] || state.isLoadingBank) {
+    return;
+  }
+
+  state.bankKey = bankKey;
+  localStorage.setItem(SELECTED_BANK_KEY, bankKey);
+  state.exam = null;
+  dom.examPanel.classList.add("hidden");
+  dom.resultPanel.classList.add("hidden");
+  dom.configPanel.classList.remove("hidden");
+  updateBankUI();
+  await loadCurrentBank();
+}
+
+async function loadCurrentBank() {
+  state.isLoadingBank = true;
+  setControlsDisabled(true);
+  updateBankUI();
+
+  const bank = getCurrentBank();
+  const response = await fetch(bank.url, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`Failed to load question bank: ${response.status}`);
+    throw new Error(`Failed to load ${bank.name}: ${response.status}`);
   }
 
   const rawQuestions = await response.json();
   state.questions = rawQuestions
-    .map(normalizeQuestion)
-    .filter((question) => question && question.id != null);
+    .map((raw, index) => normalizeQuestion(raw, index))
+    .filter((question) => question && question.id);
 
   hydrateRecords();
-  bindEvents();
-  updateModeUI();
+  state.isLoadingBank = false;
+  setControlsDisabled(false);
+  updateBankUI();
   updateDashboard();
   renderWrongbook();
 }
 
-function normalizeQuestion(raw) {
+function setControlsDisabled(disabled) {
+  [...dom.bankCards, ...dom.modeCards, dom.startExamBtn, dom.resetRecordsBtn, dom.clearWrongbookBtn]
+    .filter(Boolean)
+    .forEach((element) => {
+      element.disabled = disabled;
+    });
+}
+
+function getCurrentBank() {
+  return QUESTION_BANKS[state.bankKey] || QUESTION_BANKS.security;
+}
+
+function getStorageKey(bankKey = state.bankKey) {
+  return `${STORAGE_PREFIX}_${bankKey}`;
+}
+
+function normalizeQuestion(raw, index) {
   const optionKeys = ["A", "B", "C", "D", "E", "F"];
-  const type = cleanText(raw.type || "未知题型");
   const options = optionKeys
     .map((key) => ({
       key,
@@ -91,21 +182,32 @@ function normalizeQuestion(raw) {
     }))
     .filter((item) => item.text);
 
+  const rawType = cleanText(raw.type || "");
+  const inferredJudge = options.length === 2 && options[0]?.text === "对" && options[1]?.text === "错";
+  const type = rawType && rawType !== "???" ? rawType : inferredJudge ? "判断题" : "单选题";
+  const sourceWork = cleanText(raw.source_work || "");
+  const localId = raw.local_id ?? raw.merged_id ?? raw.id ?? index + 1;
+  const id = cleanText(raw.id ?? `${sourceWork || getCurrentBank().shortName}-${localId}`);
+
   return {
-    id: Number(raw.id),
+    id,
+    displayId: cleanText(raw.merged_id ?? localId),
     type,
-    bucket: detectTypeBucket(type),
+    bucket: detectTypeBucket(type, options, raw.answer),
     score: Number(raw.score || 1),
     question: cleanText(raw.question || ""),
     options,
     answer: cleanAnswer(raw.answer || ""),
     explanation: cleanText(raw.explanation || ""),
     knowledgePoint: cleanText(raw.knowledge_point || ""),
+    sourceWork,
+    sourceStatus: cleanText(raw.source_status || ""),
+    answerSource: cleanText(raw.answer_source || ""),
     initialWrong: cleanText(raw.is_wrong || "") === "是",
   };
 }
 
-function detectTypeBucket(type) {
+function detectTypeBucket(type, options = [], answer = "") {
   if (type.includes("多选")) {
     return "multiple";
   }
@@ -114,6 +216,12 @@ function detectTypeBucket(type) {
   }
   if (type.includes("单选")) {
     return "single";
+  }
+  if (options.length === 2 && options[0]?.text === "对" && options[1]?.text === "错") {
+    return "judge";
+  }
+  if (answerParts(answer).length > 1) {
+    return "multiple";
   }
   return "single";
 }
@@ -166,7 +274,11 @@ function hydrateRecords() {
 
 function loadStorage() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    const storage = JSON.parse(localStorage.getItem(getStorageKey()) || "{}");
+    if (Object.keys(storage).length || state.bankKey !== "security") {
+      return storage;
+    }
+    return JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "{}");
   } catch (_error) {
     return {};
   }
@@ -174,7 +286,7 @@ function loadStorage() {
 
 function persistState() {
   localStorage.setItem(
-    STORAGE_KEY,
+    getStorageKey(),
     JSON.stringify({
       records: state.records,
       sessions: state.sessions,
@@ -182,21 +294,14 @@ function persistState() {
   );
 }
 
-function bindEvents() {
-  dom.modeCards.forEach((card) => {
-    card.addEventListener("click", () => {
-      state.mode = card.dataset.mode;
-      updateModeUI();
-    });
+function updateBankUI() {
+  const bank = getCurrentBank();
+  dom.bankCards.forEach((card) => {
+    card.classList.toggle("active", card.dataset.bank === state.bankKey);
   });
-
-  dom.startExamBtn.addEventListener("click", startExam);
-  dom.prevQuestionBtn.addEventListener("click", () => navigateQuestion(-1));
-  dom.nextQuestionBtn.addEventListener("click", () => navigateQuestion(1));
-  dom.submitExamTriggers.forEach((button) => button.addEventListener("click", submitExam));
-  dom.restartBtn.addEventListener("click", finishReview);
-  dom.resetRecordsBtn.addEventListener("click", resetAllRecords);
-  dom.clearWrongbookBtn.addEventListener("click", clearWrongbook);
+  if (dom.currentBankLabel) {
+    dom.currentBankLabel.textContent = bank.shortName;
+  }
 }
 
 function updateModeUI() {
@@ -204,10 +309,11 @@ function updateModeUI() {
     card.classList.toggle("active", card.dataset.mode === state.mode);
   });
 
+  const bankName = getCurrentBank().shortName;
   dom.modeHint.textContent =
     state.mode === "normal"
-      ? "普通考试会自动跳过当前错题池中的题。"
-      : "错题专项只从错题池抽题，答对后会移出错题池。";
+      ? `普通考试只从「${bankName}」题库抽题，并跳过当前错题。`
+      : `错题专项只从「${bankName}」错题池抽题，答对后移出错题本。`;
 }
 
 function updateDashboard() {
@@ -226,6 +332,7 @@ function updateDashboard() {
   dom.latestScore.textContent = latestSession
     ? `${latestSession.correctCount} / ${latestSession.totalCount}`
     : "暂无";
+  updateModeUI();
 }
 
 function getNormalQuestions() {
@@ -245,12 +352,14 @@ function startExam() {
 
   const pool = state.mode === "wrong" ? getWrongQuestions() : getNormalQuestions();
   if (!pool.length) {
-    alert(state.mode === "wrong" ? "错题池为空，先去普通模式做题。" : "普通模式可抽题为空。");
+    alert(state.mode === "wrong" ? "当前题库错题池为空，先去普通模式做题。" : "当前题库普通模式可抽题为空。");
     return;
   }
 
   const selected = pickQuestionsByRatio(pool, Math.min(count, pool.length));
   state.exam = {
+    bankKey: state.bankKey,
+    bankName: getCurrentBank().shortName,
     mode: state.mode,
     currentIndex: 0,
     questions: selected,
@@ -354,10 +463,11 @@ function renderExam() {
   const question = exam.questions[exam.currentIndex];
   const result = exam.results[question.id];
   const correctKeys = normalizeAnswerToKeys(question, question.answer);
-  dom.examModeLabel.textContent = exam.mode === "wrong" ? "错题专项" : "普通考试";
+  const modeName = exam.mode === "wrong" ? "错题专项" : "普通考试";
+  dom.examModeLabel.textContent = `${exam.bankName} · ${modeName}`;
   dom.examProgressLabel.textContent = `第 ${exam.currentIndex + 1} / ${exam.questions.length} 题`;
   dom.examProgressFill.style.width = `${((exam.currentIndex + 1) / exam.questions.length) * 100}%`;
-  dom.questionType.textContent = `${question.type} · ${question.score} 分`;
+  dom.questionType.textContent = `${question.type} · ${question.score} 分${formatQuestionSourceInline(question)}`;
   dom.questionText.textContent = question.question;
 
   dom.optionsList.innerHTML = "";
@@ -399,6 +509,17 @@ function renderExam() {
   const answeredCount = Object.keys(exam.results).length;
   dom.examSubmitHint.textContent = `已作答 ${answeredCount} / ${exam.questions.length} 题`;
   renderQuestionIndex();
+}
+
+function formatQuestionSourceInline(question) {
+  const parts = [];
+  if (question.sourceWork) {
+    parts.push(question.sourceWork);
+  }
+  if (question.sourceStatus === "非官方" || question.answerSource.includes("非官方")) {
+    parts.push("非官方");
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
 function renderAnswerFeedback(question) {
@@ -484,7 +605,14 @@ function submitExam() {
 
   let correctCount = 0;
   for (const item of review) {
-    const record = state.records[item.question.id];
+    const record = state.records[item.question.id] || {
+      wrongCount: 0,
+      correctCount: 0,
+      lastResult: "",
+      inWrongBook: false,
+    };
+    state.records[item.question.id] = record;
+
     if (item.isCorrect) {
       correctCount += 1;
       record.correctCount += 1;
@@ -501,6 +629,7 @@ function submitExam() {
 
   state.sessions.unshift({
     date: new Date().toISOString(),
+    bankKey: state.bankKey,
     mode: exam.mode,
     totalCount: exam.questions.length,
     correctCount,
@@ -531,11 +660,14 @@ function renderResult(review, correctCount, totalCount) {
     card.innerHTML = `
       <div class="review-meta">
         <span class="pill ${item.isCorrect ? "right" : "wrong"}">${item.isCorrect ? "答对" : "答错"}</span>
-        <span>${item.question.type}</span>
+        <span>${escapeHtml(item.question.type)}</span>
+        ${item.question.sourceWork ? `<span>来源：${escapeHtml(item.question.sourceWork)}</span>` : ""}
+        ${item.question.sourceStatus === "非官方" || item.question.answerSource.includes("非官方") ? '<span class="pill wrong">非官方</span>' : ""}
       </div>
-      <strong>${item.question.id}. ${escapeHtml(item.question.question)}</strong>
+      <strong>${escapeHtml(item.question.displayId)}. ${escapeHtml(item.question.question)}</strong>
       <p>你的答案：${escapeHtml(formatAnswerText(item.question, item.userAnswer) || "未作答")}</p>
       <p>正确答案：${escapeHtml(formatAnswerText(item.question, item.question.answer))}</p>
+      ${item.question.answerSource ? `<p class="source-note">答案来源：${escapeHtml(item.question.answerSource)}</p>` : ""}
       ${item.question.explanation ? `<p>解析：${escapeHtml(item.question.explanation)}</p>` : ""}
     `;
     dom.resultReviewList.appendChild(card);
@@ -555,7 +687,7 @@ function renderWrongbook() {
   dom.wrongbookList.innerHTML = "";
 
   if (!wrongQuestions.length) {
-    dom.wrongbookList.innerHTML = '<p class="empty-state">错题本还是空的，先去做一轮普通考试吧。</p>';
+    dom.wrongbookList.innerHTML = `<p class="empty-state">「${escapeHtml(getCurrentBank().shortName)}」错题本还是空的，先去做一轮普通考试吧。</p>`;
     return;
   }
 
@@ -565,15 +697,18 @@ function renderWrongbook() {
     card.className = "wrongbook-card";
     card.innerHTML = `
       <div class="wrongbook-meta">
-        <span>${question.type}</span>
+        <span>${escapeHtml(question.type)}</span>
         <span>错 ${record.wrongCount} 次</span>
         <span>对 ${record.correctCount} 次</span>
+        ${question.sourceWork ? `<span>来源：${escapeHtml(question.sourceWork)}</span>` : ""}
+        ${question.sourceStatus === "非官方" || question.answerSource.includes("非官方") ? '<span class="pill wrong">非官方</span>' : ""}
       </div>
-      <strong>${question.id}. ${escapeHtml(question.question)}</strong>
+      <strong>${escapeHtml(question.displayId)}. ${escapeHtml(question.question)}</strong>
       <p>正确答案：${escapeHtml(formatAnswerText(question, question.answer))}</p>
+      ${question.answerSource ? `<p class="source-note">答案来源：${escapeHtml(question.answerSource)}</p>` : ""}
       ${question.explanation ? `<p>解析：${escapeHtml(question.explanation)}</p>` : ""}
       <div class="wrongbook-actions">
-        <button class="danger-link" type="button" data-clear-id="${question.id}">移出错题本</button>
+        <button class="danger-link" type="button" data-clear-id="${escapeHtml(question.id)}">移出错题本</button>
       </div>
     `;
     card.querySelector("[data-clear-id]").addEventListener("click", () => {
@@ -587,7 +722,7 @@ function renderWrongbook() {
 }
 
 function clearWrongbook() {
-  if (!confirm("确定清空错题本吗？这不会删除题库，只会清除错题状态。")) {
+  if (!confirm(`确定清空「${getCurrentBank().shortName}」错题本吗？这不会影响其他题库。`)) {
     return;
   }
 
@@ -599,12 +734,12 @@ function clearWrongbook() {
   renderWrongbook();
 }
 
-function resetAllRecords() {
-  if (!confirm("确定重置全部答题记录吗？错题、成绩、历史都会清空。")) {
+function resetCurrentBankRecords() {
+  if (!confirm(`确定重置「${getCurrentBank().shortName}」的全部答题记录吗？这不会影响其他题库。`)) {
     return;
   }
 
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(getStorageKey());
   state.records = {};
   state.sessions = [];
   state.questions.forEach((question) => {
@@ -675,8 +810,7 @@ function updateAnswerSelection(question, optionKey, checked) {
         selected.push(optionKey);
       }
     } else {
-      const next = selected.filter((key) => key !== optionKey);
-      state.exam.answers[question.id] = next;
+      state.exam.answers[question.id] = selected.filter((key) => key !== optionKey);
       return;
     }
 
@@ -761,7 +895,6 @@ function normalizeAnswerToKeys(question, answer) {
     return part;
   });
 }
-
 
 function escapeHtml(value) {
   return String(value ?? "")
