@@ -2,12 +2,12 @@ const QUESTION_BANKS = {
   security: {
     name: "网络安全",
     shortName: "网络安全",
-    url: "./outputs/xuexitong_exam_export/questions.json",
+    url: "./outputs/xuexitong_exam_export/questions.json?v=20260707-dedupe2",
   },
   software_test: {
     name: "软件测试",
     shortName: "软件测试",
-    url: "./outputs/xuexitong_course2_export/questions.json",
+    url: "./outputs/xuexitong_course2_export/questions.json?v=20260707-dedupe2",
   },
 };
 
@@ -145,9 +145,10 @@ async function loadCurrentBank() {
   }
 
   const rawQuestions = await response.json();
-  state.questions = rawQuestions
+  const normalizedQuestions = rawQuestions
     .map((raw, index) => normalizeQuestion(raw, index))
     .filter((question) => question && question.id);
+  state.questions = dedupeQuestions(normalizedQuestions);
 
   hydrateRecords();
   state.isLoadingBank = false;
@@ -188,9 +189,11 @@ function normalizeQuestion(raw, index) {
   const sourceWork = cleanText(raw.source_work || "");
   const localId = raw.local_id ?? raw.merged_id ?? raw.id ?? index + 1;
   const id = cleanText(raw.id ?? `${sourceWork || getCurrentBank().shortName}-${localId}`);
+  const recordIds = mergeQuestionIds([id], parseQuestionIds(raw.duplicate_ids));
 
   return {
     id,
+    recordIds,
     displayId: cleanText(raw.merged_id ?? localId),
     type,
     bucket: detectTypeBucket(type, options, raw.answer),
@@ -204,7 +207,78 @@ function normalizeQuestion(raw, index) {
     sourceStatus: cleanText(raw.source_status || ""),
     answerSource: cleanText(raw.answer_source || ""),
     initialWrong: cleanText(raw.is_wrong || "") === "是",
+    fingerprint: makeQuestionFingerprint(raw.question || "", options),
   };
+}
+
+function dedupeQuestions(questions) {
+  const byFingerprint = new Map();
+
+  questions.forEach((question) => {
+    const existing = byFingerprint.get(question.fingerprint);
+    if (!existing) {
+      byFingerprint.set(question.fingerprint, question);
+      return;
+    }
+
+    const mergedSources = mergeSourceLabels(existing.sourceWork, question.sourceWork);
+    const merged = {
+      ...question,
+      recordIds: mergeQuestionIds(existing.recordIds, question.recordIds),
+      sourceWork: mergedSources,
+      explanation: mergeExplanation(existing.explanation, question.explanation, existing.sourceWork),
+      answerSource: mergeAnswerSource(existing.answerSource, question.answerSource, existing.sourceWork),
+      initialWrong: existing.initialWrong || question.initialWrong,
+    };
+
+    byFingerprint.set(question.fingerprint, merged);
+  });
+
+  return [...byFingerprint.values()];
+}
+
+function parseQuestionIds(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return cleanText(value)
+    .split(/\s*\/\s*|\s*,\s*|\s*，\s*/)
+    .filter(Boolean);
+}
+
+function mergeQuestionIds(...groups) {
+  return [...new Set(groups.flat().map(cleanText).filter(Boolean))];
+}
+
+function makeQuestionFingerprint(question, options = []) {
+  return normalizeForFingerprint(question || options.map((option) => option.text).join("|"));
+}
+
+function normalizeForFingerprint(value) {
+  return cleanText(value)
+    .replace(/\s+/g, "")
+    .replace(/[，。；：,.、;:()（）[\]【】_＿"“”'‘’\-—]/g, "")
+    .toLowerCase();
+}
+
+function mergeSourceLabels(left, right) {
+  return [...new Set([...(left || "").split(" / "), ...(right || "").split(" / ")].map(cleanText).filter(Boolean))].join(" / ");
+}
+
+function mergeExplanation(left, right, duplicateSource) {
+  const parts = [left, right].map(cleanText).filter(Boolean);
+  if (duplicateSource) {
+    parts.push(`已合并重复题来源：${duplicateSource}`);
+  }
+  return [...new Set(parts)].join(" / ");
+}
+
+function mergeAnswerSource(left, right, duplicateSource) {
+  const parts = [left, right].map(cleanText).filter(Boolean);
+  if (duplicateSource) {
+    parts.push(`重复题合并，另一个来源：${duplicateSource}`);
+  }
+  return [...new Set(parts)].join(" / ");
 }
 
 function detectTypeBucket(type, options = [], answer = "") {
@@ -251,7 +325,7 @@ function hydrateRecords() {
   state.records = {};
 
   for (const question of state.questions) {
-    const savedRecord = saved.records?.[question.id] || {};
+    const savedRecord = mergeSavedRecords(question.recordIds?.map((id) => saved.records?.[id]) || []);
     state.records[question.id] = {
       wrongCount: Number(savedRecord.wrongCount || 0),
       correctCount: Number(savedRecord.correctCount || 0),
@@ -270,6 +344,23 @@ function hydrateRecords() {
 
   state.sessions = Array.isArray(saved.sessions) ? saved.sessions.slice(0, 20) : [];
   persistState();
+}
+
+function mergeSavedRecords(records) {
+  return records.filter(Boolean).reduce(
+    (merged, record) => ({
+      wrongCount: merged.wrongCount + Number(record.wrongCount || 0),
+      correctCount: merged.correctCount + Number(record.correctCount || 0),
+      lastResult: record.lastResult || merged.lastResult,
+      inWrongBook: Boolean(merged.inWrongBook || record.inWrongBook),
+    }),
+    {
+      wrongCount: 0,
+      correctCount: 0,
+      lastResult: "",
+      inWrongBook: false,
+    },
+  );
 }
 
 function loadStorage() {
@@ -336,11 +427,22 @@ function updateDashboard() {
 }
 
 function getNormalQuestions() {
-  return state.questions.filter((question) => !state.records[question.id]?.inWrongBook);
+  return dedupePoolByWrongState(state.questions, false);
 }
 
 function getWrongQuestions() {
-  return state.questions.filter((question) => state.records[question.id]?.inWrongBook);
+  return dedupePoolByWrongState(state.questions, true);
+}
+
+function dedupePoolByWrongState(questions, wantWrong) {
+  const byFingerprint = new Map();
+  questions.forEach((question) => {
+    const isWrong = Boolean(state.records[question.id]?.inWrongBook);
+    if (isWrong === wantWrong && !byFingerprint.has(question.fingerprint)) {
+      byFingerprint.set(question.fingerprint, question);
+    }
+  });
+  return [...byFingerprint.values()];
 }
 
 function startExam() {
@@ -625,6 +727,7 @@ function submitExam() {
       record.lastResult = "wrong";
       record.inWrongBook = true;
     }
+    syncDuplicateRecords(item.question, record);
   }
 
   state.sessions.unshift({
@@ -643,6 +746,22 @@ function submitExam() {
 
   dom.examPanel.classList.add("hidden");
   dom.resultPanel.classList.remove("hidden");
+}
+
+function syncDuplicateRecords(question, sourceRecord) {
+  state.questions.forEach((candidate) => {
+    if (candidate.id === question.id || candidate.fingerprint !== question.fingerprint) {
+      return;
+    }
+
+    state.records[candidate.id] = {
+      ...state.records[candidate.id],
+      wrongCount: Math.max(Number(state.records[candidate.id]?.wrongCount || 0), sourceRecord.wrongCount),
+      correctCount: Math.max(Number(state.records[candidate.id]?.correctCount || 0), sourceRecord.correctCount),
+      lastResult: sourceRecord.lastResult,
+      inWrongBook: sourceRecord.inWrongBook,
+    };
+  });
 }
 
 function renderResult(review, correctCount, totalCount) {
